@@ -7,11 +7,18 @@ def main():
 
     p = argparse.ArgumentParser(description='Maybe file copier')
     p.add_argument('--sources', '-s', dest="sources", required=True, nargs="+", help="Source files")
+    p.add_argument('--source-dir', '-sd', dest="source_dir", required=False, help="Directory of source files")
     p.add_argument('--destinations', '-d', dest="destinations", required=True, nargs="+", help="Destination files")
+    p.add_argument('--destination-dir', '-dd', dest="destination_dir", required=False, help="Directory of destination files")
     args = p.parse_args()
 
-    sources = [os.path.abspath(s) for s in args.sources]
-    dests = [os.path.abspath(s) for s in args.destinations]
+    def fix_path(directory, file_path):
+        if directory:
+            file_path = os.path.join(directory, file_path)
+        return os.path.abspath(file_path)
+
+    sources = [fix_path(args.source_dir, s) for s in args.sources]
+    dests = [fix_path(args.destination_dir, s) for s in args.destinations]
     if len(sources) != len(dests):
         raise Exception("Mismatching sources/destinations")
 
