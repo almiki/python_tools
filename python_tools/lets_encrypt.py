@@ -35,7 +35,7 @@ class Server(object):
 
             def service_actions(self, *args, **kwargs):
                 http.server.ThreadingHTTPServer.service_actions(self, *args, **kwargs)
-                
+
                 with self.__lock:
                     self.__serviced_actions = True
                     self.__cond.notify_all()
@@ -82,9 +82,24 @@ class Server(object):
                 if self.__thread is not None:
                     self.__thread.join()
                     self.__thread = None
-                    
+
         print("Stopped server")
 
+
+def _get_certbot_nginx_conf():
+    import certbot_nginx
+    import os
+    import inspect
+
+    path = inspect.getfile(certbot_nginx)
+    while True:
+        d, f = os.path.split(path)
+        if os.path.isfile(path):
+            path = d
+        else:
+            break
+
+    return os.path.join(path, "_internal", "tls_configs", "options-ssl-nginx.conf")
 
 
 # Notes:
@@ -110,7 +125,7 @@ def main():
     p.add_argument('--outputs', '-o', dest="outputs", nargs="*", help="Directories to copy the fullchain.pem and privkey.pem to")
     p.add_argument('--force', dest="force", action=argparse.BooleanOptionalAction, help="Force renewal?")
     p.add_argument('--real', dest="real", action=argparse.BooleanOptionalAction, help="Do it for real?")
-    p.add_argument('action', choices=['create','renew','schedule'], help="action")
+    p.add_argument('action', choices=['create','renew','wipe'], help="action")
     args = p.parse_args()
 
     webroot = os.path.abspath(args.webroot)
@@ -121,7 +136,11 @@ def main():
         if not os.path.isdir(folder):
             raise Exception("Missing directory: " + folder)
 
-    if args.action == "schedule":
+    if args.action == "wipe":
+        for d in [webroot, storage]:
+            shutil.rmtree(d)
+            os.mkdir(d)
+            print("Wiped " + d)
         return
 
     server = Server()
@@ -135,10 +154,10 @@ def main():
                                .format(test="--test-cert" if not args.real else "",
                                        force="--force-renewal" if args.force else "",
                                        email=args.email,
-                                       webroot=webroot, 
-                                       domain=args.domain, 
-                                       config=os.path.join(storage, ".config"), 
-                                       work=os.path.join(storage, ".work"), 
+                                       webroot=webroot,
+                                       domain=args.domain,
+                                       config=os.path.join(storage, ".config"),
+                                       work=os.path.join(storage, ".work"),
                                        logs=os.path.join(storage, ".logs")))
 
         elif args.action == "renew":
@@ -146,14 +165,14 @@ def main():
             result = os.system("certbot renew -n {test} {force} --cert-name {domain} --config-dir {config} --work-dir {work} --logs-dir {logs}"
                                .format(test="--test-cert" if not args.real else "",
                                        force="--force-renewal" if args.force else "",
-                                       domain=args.domain, 
-                                       config=os.path.join(storage, ".config"), 
-                                       work=os.path.join(storage, ".work"), 
+                                       domain=args.domain,
+                                       config=os.path.join(storage, ".config"),
+                                       work=os.path.join(storage, ".work"),
                                        logs=os.path.join(storage, ".logs")))
 
         else:
             raise Exception("Unsupported: " + args.action)
-        
+
         if result != 0:
             raise Exception("{} result {}".format(op, result))
 
@@ -161,36 +180,35 @@ def main():
 
         cert_file = os.path.join(storage, ".config", "live", args.domain, "fullchain.pem")
         key_file = os.path.join(storage, ".config", "live", args.domain, "privkey.pem")
+        nginx_file = _get_certbot_nginx_conf()
 
-        for f in [cert_file, key_file]:
+        for f in [cert_file, key_file, nginx_file]:
             if not os.path.isfile(f):
                 raise Exception("Can't find " + f)
 
-        if args.outputs is not None:
-            for o in args.outputs:
-                o = os.path.abspath(o)
+        for o in outputs:
+            cf = os.path.join(o, "fullchain.pem")
+            kf = os.path.join(o, "privkey.pem")
+            nf = os.path.join(o, "options-ssl-nginx.conf")
 
-                cf = os.path.join(o, "fullchain.pem")
-                kf = os.path.join(o, "privkey.pem")
+            for source, dest in [(cert_file, cf), (key_file, kf), (nginx_file, nf)]:
+                try:
+                    with open(source, 'rb') as f:
+                        src_hash = hashlib.file_digest(f, 'sha256').hexdigest()
+                except:
+                    src_hash = None
 
-                for source, dest in [(cert_file, cf), (key_file, kf)]:
-                    try:
-                        with open(source, 'rb') as f:
-                            src_hash = hashlib.file_digest(f, 'sha256').hexdigest()
-                    except:
-                        src_hash = None
+                try:
+                    with open(dest, 'rb') as f:
+                        dest_hash = hashlib.file_digest(f, 'sha256').hexdigest()
+                except:
+                    dest_hash = None
 
-                    try:
-                        with open(dest, 'rb') as f:
-                            dest_hash = hashlib.file_digest(f, 'sha256').hexdigest()
-                    except:
-                        dest_hash = None
-
-                    if src_hash is None or dest_hash is None or src_hash != dest_hash:
-                        shutil.copyfile(source, dest)
-                        print("Copied '{}' to '{}'".format(source, dest))
-                    else:
-                        print("Skipping copy of '{}' to '{}'".format(source, dest))
+                if src_hash is None or dest_hash is None or src_hash != dest_hash:
+                    shutil.copyfile(source, dest)
+                    print("Copied '{}' to '{}'".format(source, dest))
+                else:
+                    print("Skipping copy of '{}' to '{}'".format(source, dest))
 
     finally:
         server.stop()
